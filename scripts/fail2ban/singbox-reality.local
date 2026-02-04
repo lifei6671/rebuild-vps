@@ -1,0 +1,24 @@
+[singbox-reality]
+enabled  = true
+filter   = singbox-reality
+
+# 读 journald（比 logpath 更稳）
+backend  = systemd
+
+# 只匹配 sing-box 的 unit（如果你的 unit 名不一样，改这里）
+journalmatch = _SYSTEMD_UNIT=sing-box.service
+
+# 触发策略：10分钟内出现 30 次就 ban
+findtime = 10m
+maxretry = 30
+
+# 封禁时长：先 12 小时，你也可以改成 1d/7d
+bantime  = 12h
+
+# 端口：写你的 vless 入站端口（可多个逗号分隔）
+port     = 443,8443
+
+# 动作：二选一（看你系统用 nftables 还是 iptables）
+# Debian 13 默认 nftables 更常见
+# action   = nftables[type=multiport]
+action = iptables-multiport
