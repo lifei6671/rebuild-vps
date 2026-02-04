@@ -127,21 +127,68 @@ install_fail2ban() {
   backup_file "${jail_local}"
   log "Writing fail2ban configuration."
   cat >"${jail_local}" <<'EOF'
+#DEFAULT-START
 [DEFAULT]
-bantime = 1h
-findtime = 10m
+bantime = 600
+findtime = 300
 maxretry = 5
+banaction = iptables-multiport
+action = %(action_mwl)s
+#DEFAULT-END
+
+# 使用 systemd 日志（Debian 13 推荐）
 backend = systemd
+# 防止误封
+usedns = no
+
+# 忽略本机
+ignoreip = 127.0.0.1/8 ::1
 
 [sshd]
+ignoreip = 127.0.0.1/8
 enabled = true
-
-[recidive]
-enabled = true
-logpath = /var/log/fail2ban.log
-bantime = 7d
-findtime = 1d
+filter = sshd
+port = 22222
 maxretry = 5
+findtime = 300
+bantime = 600
+banaction = iptables-multiport
+action = %(action_mwl)s
+logpath = /var/log/auth.log
+
+[sshd-aggressive]
+enabled = true
+port = 22222
+filter = sshd-aggressive
+logpath = /var/log/auth.log
+maxretry = 2
+findtime = 10m
+bantime = 6h
+EOF
+  # 写入 jail.d 中的 sshd-aggressive.local
+  mkdir -p /etc/fail2ban/jail.d
+  cat >/etc/fail2ban/jail.d/sshd-aggressive.local <<'EOF'
+[sshd-aggressive]
+enabled = true
+port = 22222
+filter = sshd-aggressive
+logpath = /var/log/auth.log
+maxretry = 2
+findtime = 10m
+bantime = 6h
+EOF
+  # 写入 sshd-aggressive 过滤规则
+  mkdir -p /etc/fail2ban/filter.d
+  cat >/etc/fail2ban/filter.d/sshd-aggressive.conf <<'EOF'
+[Definition]
+allowipv6 = auto
+failregex =
+    ^.*Failed publickey for .* from <HOST> port \d+ ssh2
+    ^.*Authentication failure for .* from <HOST>
+    ^.*Invalid user .* from <HOST>
+    ^.*User .* from <HOST> not allowed because not listed in AllowUsers
+
+ignoreregex =
 EOF
   systemctl enable --now fail2ban
   log "fail2ban installed and enabled."
@@ -411,7 +458,7 @@ install_sing_box() {
 
   # 使用官方 Makefile 参数，确保版本号写入二进制
   bash -lc "source /etc/profile.d/gvm.sh && make build \
-    TAGS=\"\" \
+    TAGS=\"with_quic,with_grpc,with_wireguard,with_utls,with_acme,with_gvisor\" \
     LDFLAGS=\"-X 'github.com/sagernet/sing-box/constant.Version=${version}' -X 'internal/godebug.defaultGODEBUG=multipathtcp=0' -s -w -buildid= -checklinkname=0\""
 
   local bin
@@ -545,6 +592,22 @@ EOF
   log "zsh + oh-my-zsh configured."
 }
 
+install_ufw() {
+  require_root
+  # 安装并配置 UFW，默认放行常用端口
+  ensure_packages ufw
+
+  log "Configuring UFW firewall."
+  ufw allow 80/tcp
+  ufw allow 443/tcp
+  ufw allow 8433/tcp
+  ufw allow 22222/tcp
+
+  ufw --force enable
+  ufw status verbose || true
+  log "UFW configured and enabled."
+}
+
 summary() {
   log "Summary:"
   echo "  SSH port: 22222"
@@ -599,9 +662,10 @@ confirm_continue() {
 }
 
 parse_args() {
-  # 支持：--skip-1panel / --skip-zsh / --only=xxx,yyy
+  # 支持：--skip-1panel / --skip-zsh / --skip-ufw / --only=xxx,yyy
   SKIP_1PANEL=0
   SKIP_ZSH=0
+  SKIP_UFW=0
   ONLY=""
   for arg in "$@"; do
     case "${arg}" in
@@ -610,6 +674,9 @@ parse_args() {
         ;;
       --skip-zsh)
         SKIP_ZSH=1
+        ;;
+      --skip-ufw)
+        SKIP_UFW=1
         ;;
       --only=*)
         ONLY="${arg#--only=}"
@@ -660,6 +727,12 @@ main() {
     if should_run "zsh"; then install_zsh_ohmyzsh; fi
   else
     log "Skipping zsh/oh-my-zsh installation."
+  fi
+
+  if [[ "${SKIP_UFW}" -eq 0 ]]; then
+    if should_run "ufw"; then install_ufw; fi
+  else
+    log "Skipping UFW installation."
   fi
 
   if should_run "summary"; then summary; fi
